@@ -273,7 +273,7 @@ impl<'a, T: Text<'a> + Clone> QueryNormalization<'a, T> {
     fn compare_definitions(&self, a: &Definition<'a, T>, b: &Definition<'a, T>) -> Ordering {
         match (a, b) {
             // Keep operations as they are
-            (Definition::Operation(a), Definition::Operation(b)) => Ordering::Equal,
+            (Definition::Operation(_), Definition::Operation(_)) => Ordering::Equal,
             // Sort fragments by name
             (Definition::Fragment(a), Definition::Fragment(b)) => a.name.cmp(&b.name),
             // Operation -> Fragment
