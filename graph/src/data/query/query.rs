@@ -6,6 +6,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use crate::{
+    data::graphql::query_hash::query_hash,
     data::graphql::shape_hash::shape_hash,
     prelude::{q, r, DeploymentHash, SubgraphName, ENV_VARS},
 };
@@ -134,6 +135,7 @@ pub struct Query {
     pub document: q::Document,
     pub variables: Option<QueryVariables>,
     pub shape_hash: u64,
+    pub hash: u64,
     pub query_text: Arc<String>,
     pub variables_text: Arc<String>,
     _force_use_of_new: (),
@@ -142,6 +144,7 @@ pub struct Query {
 impl Query {
     pub fn new(document: q::Document, variables: Option<QueryVariables>) -> Self {
         let shape_hash = shape_hash(&document);
+        let hash = query_hash(&document);
 
         let (query_text, variables_text) = if ENV_VARS.log_gql_timing()
             || (ENV_VARS.graphql.enable_validations && ENV_VARS.graphql.silent_graphql_validations)
@@ -160,6 +163,7 @@ impl Query {
             document,
             variables,
             shape_hash,
+            hash,
             query_text: Arc::new(query_text),
             variables_text: Arc::new(variables_text),
             _force_use_of_new: (),

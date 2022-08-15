@@ -1459,6 +1459,7 @@ dependencies = [
  "futures 0.1.31",
  "futures 0.3.16",
  "graphql-parser",
+ "graphql-tools",
  "hex",
  "http",
  "isatty",
@@ -1913,8 +1914,7 @@ dependencies = [
 [[package]]
 name = "graphql-tools"
 version = "0.0.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a792425b9e2ed860d0c1393dab3cb56af6d96558b64b469b99d1e58e43c16b8a"
+source = "git+https://github.com/dotansimha/graphql-tools-rs?branch=kamil-transformer#6cff5d811a3f86d6e529e7c151c22d83fe7d711e"
 dependencies = [
  "graphql-parser",
  "serde",
