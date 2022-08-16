@@ -1913,8 +1913,9 @@ dependencies = [
 
 [[package]]
 name = "graphql-tools"
-version = "0.0.20"
-source = "git+https://github.com/dotansimha/graphql-tools-rs?branch=kamil-transformer#6cff5d811a3f86d6e529e7c151c22d83fe7d711e"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13c437afbde2b7eabd07ba68dbcdaa33e0bb122032a235623036f6f8c2f78d3b"
 dependencies = [
  "graphql-parser",
  "serde",
