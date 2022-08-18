@@ -1,334 +1,257 @@
 use crate::prelude::q;
-use graphql_parser::query::{
-    Definition, Directive, Document, Field, FragmentDefinition, Mutation, Number,
-    OperationDefinition, Query, Selection, SelectionSet, Subscription, Text, Value,
-    VariableDefinition,
-};
-use graphql_tools::ast::{OperationTransformer, Transformed, TransformedValue};
 use std::cmp::Ordering;
-use std::collections::{hash_map::DefaultHasher, BTreeMap};
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::marker::PhantomData;
 
+// The idea here is to avoid misses and increase the hit rate of the GraphQL validation's cache by normalizing GraphQL operations.
+// An exact same hash for two queries means that they are identical in the context of GraphQL Validation rules.
+//
+// Hashing includes:
+// - sorting of the fields, fragments, arguments, fragment definitions, variables etc.
+// - ignoring operation names
+// - transforming the selection sets like `query name { things }` into `{ things }`
+// - removing primitive values (like String, Int, Float except Boolean because it can change the body of the operation when used with `@include` or `@skip`)
+// - ignoring aliases
 pub fn query_hash(query: &q::Document) -> u64 {
-    let mut query_normalization = QueryNormalization::new();
-    let normalized_query = query_normalization
-        .transform_document(&query)
-        .replace_or_else(|| query.clone());
-
     let mut hasher = DefaultHasher::new();
-    normalized_query.to_string().hash(&mut hasher);
+    query.query_validation_hash(&mut hasher);
     hasher.finish()
 }
 
-pub struct QueryNormalization<'a, T: Text<'a> + Clone> {
-    phantom: PhantomData<&'a T>,
+type QueryValidationHasher = DefaultHasher;
+
+pub trait QueryValidationHash {
+    fn query_validation_hash(&self, hasher: &mut QueryValidationHasher);
 }
 
-impl<'a, T: Text<'a> + Clone> QueryNormalization<'a, T> {
-    pub fn new() -> Self {
-        Self {
-            phantom: PhantomData,
-        }
-    }
-}
+impl QueryValidationHash for q::Document {
+    fn query_validation_hash(&self, hasher: &mut QueryValidationHasher) {
+        // Sort definitions by kind
+        let mut next_difinitions = self.definitions.clone();
+        next_difinitions.sort_unstable_by(|a, b| compare_definitions(a, b));
 
-impl<'a, T: Text<'a> + Clone> OperationTransformer<'a, T> for QueryNormalization<'a, T> {
-    fn transform_document(
-        &mut self,
-        document: &Document<'a, T>,
-    ) -> TransformedValue<Document<'a, T>> {
-        let mut next_definitions = self
-            .transform_list(&document.definitions, Self::transform_definition)
-            .replace_or_else(|| document.definitions.to_vec());
-        next_definitions.sort_unstable_by(|a, b| self.compare_definitions(a, b));
-        TransformedValue::Replace(Document {
-            definitions: next_definitions,
-        })
-    }
-
-    fn transform_operation(
-        &mut self,
-        operation: &OperationDefinition<'a, T>,
-    ) -> Transformed<OperationDefinition<'a, T>> {
-        match operation {
-            OperationDefinition::Query(query) => {
-                let selections = self.transform_selection_set(&query.selection_set);
-                let directives = self.transform_directives(&query.directives);
-                let variable_definitions =
-                    self.transform_variable_definitions(&query.variable_definitions);
-
-                // Replace the original query with the transformed one.
-                Transformed::Replace(OperationDefinition::Query(Query {
-                    directives: directives.replace_or_else(|| query.directives.clone()),
-                    selection_set: SelectionSet {
-                        items: selections.replace_or_else(|| query.selection_set.items.clone()),
-                        span: query.selection_set.span,
-                    },
-                    variable_definitions: variable_definitions
-                        .replace_or_else(|| query.variable_definitions.clone()),
-                    position: query.position,
-                    // Use a single name for all the queries
-                    name: Some("normalized".into()),
-                }))
+        for defn in &next_difinitions {
+            use q::Definition::*;
+            match defn {
+                Operation(operation) => operation.query_validation_hash(hasher),
+                Fragment(fragment) => fragment.query_validation_hash(hasher),
             }
-            OperationDefinition::Mutation(mutation) => {
-                let selections = self.transform_selection_set(&mutation.selection_set);
-                let directives = self.transform_directives(&mutation.directives);
-                let variable_definitions =
-                    self.transform_variable_definitions(&mutation.variable_definitions);
-
-                // Replace the original mutation with the transformed one.
-                Transformed::Replace(OperationDefinition::Mutation(Mutation {
-                    directives: directives.replace_or_else(|| mutation.directives.clone()),
-                    selection_set: SelectionSet {
-                        items: selections.replace_or_else(|| mutation.selection_set.items.clone()),
-                        span: mutation.selection_set.span,
-                    },
-                    variable_definitions: variable_definitions
-                        .replace_or_else(|| mutation.variable_definitions.clone()),
-                    position: mutation.position,
-                    // Use a single name for all the mutations
-                    name: Some("normalized".into()),
-                }))
-            }
-            OperationDefinition::Subscription(subscription) => {
-                let selections = self.transform_selection_set(&subscription.selection_set);
-                let directives = self.transform_directives(&subscription.directives);
-                let variable_definitions =
-                    self.transform_variable_definitions(&subscription.variable_definitions);
-
-                // Replace the original subscription with the transformed one.
-                Transformed::Replace(OperationDefinition::Subscription(Subscription {
-                    directives: directives.replace_or_else(|| subscription.directives.clone()),
-                    selection_set: SelectionSet {
-                        items: selections
-                            .replace_or_else(|| subscription.selection_set.items.clone()),
-                        span: subscription.selection_set.span,
-                    },
-                    variable_definitions: variable_definitions
-                        .replace_or_else(|| subscription.variable_definitions.clone()),
-                    position: subscription.position,
-                    // Use a single name for all the subscriptions
-                    name: Some("normalized".into()),
-                }))
-            }
-            OperationDefinition::SelectionSet(selection_set) => {
-                let items = self.transform_selection_set(selection_set);
-                // Transform the selection set into a named query
-                Transformed::Replace(OperationDefinition::Query(Query {
-                    directives: vec![],
-                    selection_set: SelectionSet {
-                        items: items.replace_or_else(|| selection_set.items.clone()),
-                        span: selection_set.span,
-                    },
-                    variable_definitions: vec![],
-                    position: selection_set.span.0,
-                    // Match the name with the rest of queries
-                    name: Some("normalized".into()),
-                }))
-            }
-        }
-    }
-
-    // Transform the primitive values into their default values.
-    //  Float: 0.0
-    //  Int: 0
-    //  String: ""
-    fn transform_value(&mut self, node: &Value<'a, T>) -> TransformedValue<Value<'a, T>> {
-        match node {
-            Value::Float(_) => TransformedValue::Replace(Value::Float(0.0)),
-            Value::Int(_) => TransformedValue::Replace(Value::Int(Number::from(0))),
-            Value::String(_) => TransformedValue::Replace(Value::String(String::from(""))),
-            Value::Variable(_) => TransformedValue::Keep,
-            Value::Boolean(_) => TransformedValue::Keep,
-            Value::Null => TransformedValue::Keep,
-            Value::Enum(_) => TransformedValue::Keep,
-            Value::List(val) => {
-                let items: Vec<Value<'a, T>> = val
-                    .iter()
-                    .map(|item| self.transform_value(item).replace_or_else(|| item.clone()))
-                    .collect();
-
-                TransformedValue::Replace(Value::List(items))
-            }
-            Value::Object(fields) => {
-                let fields: BTreeMap<T::Value, Value<'a, T>> = fields
-                    .iter()
-                    .map(|field| {
-                        let (name, value) = field;
-                        let new_value = self
-                            .transform_value(value)
-                            .replace_or_else(|| value.clone());
-                        (name.clone(), new_value)
-                    })
-                    .collect();
-
-                TransformedValue::Replace(Value::Object(fields))
-            }
-        }
-    }
-
-    fn transform_field(&mut self, field: &Field<'a, T>) -> Transformed<Selection<'a, T>> {
-        let selection_set = self.transform_selection_set(&field.selection_set);
-        let arguments = self.transform_arguments(&field.arguments);
-        let directives = self.transform_directives(&field.directives);
-
-        Transformed::Replace(Selection::Field(Field {
-            arguments: arguments.replace_or_else(|| field.arguments.clone()),
-            directives: directives.replace_or_else(|| field.directives.clone()),
-            selection_set: SelectionSet {
-                items: selection_set.replace_or_else(|| field.selection_set.items.clone()),
-                span: field.selection_set.span,
-            },
-            position: field.position,
-            // Remove an alias
-            alias: None,
-            name: field.name.clone(),
-        }))
-    }
-
-    // Sort the selection set
-    fn transform_selection_set(
-        &mut self,
-        selections: &SelectionSet<'a, T>,
-    ) -> TransformedValue<Vec<Selection<'a, T>>> {
-        let mut next_selections = self
-            .transform_list(&selections.items, Self::transform_selection)
-            .replace_or_else(|| selections.items.to_vec());
-        next_selections.sort_unstable_by(|a, b| self.compare_selections(a, b));
-        TransformedValue::Replace(next_selections)
-    }
-
-    // Sort directives
-    fn transform_directives(
-        &mut self,
-        directives: &Vec<Directive<'a, T>>,
-    ) -> TransformedValue<Vec<Directive<'a, T>>> {
-        let mut next_directives = self
-            .transform_list(&directives, Self::transform_directive)
-            .replace_or_else(|| directives.to_vec());
-        next_directives.sort_unstable_by(|a, b| self.compare_directives(a, b));
-        TransformedValue::Replace(next_directives)
-    }
-
-    // Sort arguments
-    fn transform_arguments(
-        &mut self,
-        arguments: &[(T::Value, Value<'a, T>)],
-    ) -> TransformedValue<Vec<(T::Value, Value<'a, T>)>> {
-        let mut next_arguments = self
-            .transform_list(&arguments, Self::transform_argument)
-            .replace_or_else(|| arguments.to_vec());
-        next_arguments.sort_unstable_by(|a, b| self.compare_arguments(a, b));
-        TransformedValue::Replace(next_arguments)
-    }
-
-    // Sort variable definitions
-    fn transform_variable_definitions(
-        &mut self,
-        variable_definitions: &Vec<VariableDefinition<'a, T>>,
-    ) -> TransformedValue<Vec<VariableDefinition<'a, T>>> {
-        let mut next_variable_definitions = self
-            .transform_list(&variable_definitions, Self::transform_variable_definition)
-            .replace_or_else(|| variable_definitions.to_vec());
-        next_variable_definitions.sort_unstable_by(|a, b| self.compare_variable_definitions(a, b));
-        TransformedValue::Replace(next_variable_definitions)
-    }
-
-    fn transform_fragment(
-        &mut self,
-        fragment: &FragmentDefinition<'a, T>,
-    ) -> Transformed<FragmentDefinition<'a, T>> {
-        let mut directives = fragment.directives.clone();
-        directives.sort_unstable_by_key(|var| var.name.clone());
-
-        let selections = self.transform_selection_set(&fragment.selection_set);
-
-        Transformed::Replace(FragmentDefinition {
-            selection_set: SelectionSet {
-                items: selections.replace_or_else(|| fragment.selection_set.items.clone()),
-                span: fragment.selection_set.span.clone(),
-            },
-            directives,
-            name: fragment.name.clone(),
-            position: fragment.position.clone(),
-            type_condition: fragment.type_condition.clone(),
-        })
-    }
-
-    fn transform_selection(
-        &mut self,
-        selection: &Selection<'a, T>,
-    ) -> Transformed<Selection<'a, T>> {
-        match selection {
-            Selection::InlineFragment(selection) => self.transform_inline_fragment(selection),
-            Selection::Field(field) => self.transform_field(field),
-            Selection::FragmentSpread(_) => Transformed::Keep,
         }
     }
 }
 
-impl<'a, T: Text<'a> + Clone> QueryNormalization<'a, T> {
-    fn compare_definitions(&self, a: &Definition<'a, T>, b: &Definition<'a, T>) -> Ordering {
-        match (a, b) {
-            // Keep operations as they are
-            (Definition::Operation(_), Definition::Operation(_)) => Ordering::Equal,
-            // Sort fragments by name
-            (Definition::Fragment(a), Definition::Fragment(b)) => a.name.cmp(&b.name),
-            // Operation -> Fragment
-            _ => definition_kind_ordering(a).cmp(&definition_kind_ordering(b)),
+impl QueryValidationHash for q::OperationDefinition {
+    fn query_validation_hash(&self, hasher: &mut QueryValidationHasher) {
+        use graphql_parser::query::OperationDefinition::*;
+        // We want `[query|subscription|mutation] things { BODY }` to hash
+        // to the same thing as just `things { BODY }`, except variables
+        match self {
+            SelectionSet(set) => set.query_validation_hash(hasher),
+            Query(query) => {
+                // Sort variables by name
+                let mut next_variables = query.variable_definitions.clone();
+                next_variables.sort_unstable_by(|a, b| compare_variable_definitions(a, b));
+
+                query.selection_set.query_validation_hash(hasher)
+            }
+            Mutation(mutation) => {
+                // Sort variables by name
+                let mut next_variables = mutation.variable_definitions.clone();
+                next_variables.sort_unstable_by(|a, b| compare_variable_definitions(a, b));
+
+                mutation.selection_set.query_validation_hash(hasher)
+            }
+            Subscription(subscription) => {
+                // Sort variables by name
+                let mut next_variables = subscription.variable_definitions.clone();
+                next_variables.sort_unstable_by(|a, b| compare_variable_definitions(a, b));
+
+                subscription.selection_set.query_validation_hash(hasher)
+            }
         }
     }
+}
 
-    fn compare_selections(&self, a: &Selection<'a, T>, b: &Selection<'a, T>) -> Ordering {
-        match (a, b) {
-            (Selection::Field(a), Selection::Field(b)) => a.name.cmp(&b.name),
-            (Selection::FragmentSpread(a), Selection::FragmentSpread(b)) => {
-                a.fragment_name.cmp(&b.fragment_name)
+impl QueryValidationHash for q::VariableDefinition {
+    fn query_validation_hash(&self, hasher: &mut QueryValidationHasher) {
+        self.name.hash(hasher);
+        match &self.default_value {
+            Some(value) => value.query_validation_hash(hasher),
+            None => (),
+        }
+        self.var_type.query_validation_hash(hasher);
+    }
+}
+
+impl QueryValidationHash for q::Type {
+    fn query_validation_hash(&self, hasher: &mut QueryValidationHasher) {
+        match self {
+            q::Type::NamedType(name) => name.hash(hasher),
+            q::Type::ListType(list) => {
+                "list".hash(hasher);
+                list.query_validation_hash(hasher)
             }
-            _ => {
-                let a_ordering = selection_kind_ordering(a);
-                let b_ordering = selection_kind_ordering(b);
-                a_ordering.cmp(&b_ordering)
+            q::Type::NonNullType(non_null) => {
+                "non-null".hash(hasher);
+                non_null.query_validation_hash(hasher)
             }
         }
     }
+}
 
-    fn compare_directives(&self, a: &Directive<'a, T>, b: &Directive<'a, T>) -> Ordering {
-        a.name.cmp(&b.name)
+impl QueryValidationHash for q::FragmentDefinition {
+    fn query_validation_hash(&self, hasher: &mut QueryValidationHasher) {
+        self.name.hash(hasher);
+        self.selection_set.query_validation_hash(hasher);
     }
+}
 
-    fn compare_arguments(
-        &self,
-        a: &(T::Value, Value<'a, T>),
-        b: &(T::Value, Value<'a, T>),
-    ) -> Ordering {
-        a.0.cmp(&b.0)
+impl QueryValidationHash for q::SelectionSet {
+    fn query_validation_hash(&self, hasher: &mut QueryValidationHasher) {
+        let mut next_items = self.items.clone();
+        next_items.sort_unstable_by(|a, b| compare_selections(a, b));
+        for selection in &next_items {
+            selection.query_validation_hash(hasher);
+        }
     }
-    fn compare_variable_definitions(
-        &self,
-        a: &VariableDefinition<'a, T>,
-        b: &VariableDefinition<'a, T>,
-    ) -> Ordering {
-        a.name.cmp(&b.name)
+}
+
+impl QueryValidationHash for q::Selection {
+    fn query_validation_hash(&self, hasher: &mut QueryValidationHasher) {
+        match self {
+            q::Selection::Field(field) => field.query_validation_hash(hasher),
+            q::Selection::FragmentSpread(fragment) => fragment.fragment_name.hash(hasher),
+            q::Selection::InlineFragment(fragment) => fragment.query_validation_hash(hasher),
+        }
     }
+}
+
+impl QueryValidationHash for q::Field {
+    fn query_validation_hash(&self, hasher: &mut QueryValidationHasher) {
+        self.name.hash(hasher);
+
+        let mut next_arguments = self.arguments.clone();
+        next_arguments.sort_unstable_by(|a, b| compare_arguments(a, b));
+
+        for arg in &next_arguments {
+            let (name, value) = arg;
+            name.hash(hasher);
+            value.query_validation_hash(hasher);
+        }
+
+        self.selection_set.query_validation_hash(hasher);
+    }
+}
+
+impl QueryValidationHash for q::InlineFragment {
+    fn query_validation_hash(&self, hasher: &mut QueryValidationHasher) {
+        match self.type_condition.clone() {
+            Some(type_condition) => type_condition.to_string().hash(hasher),
+            None => "".hash(hasher),
+        }
+        self.selection_set.query_validation_hash(hasher);
+    }
+}
+
+impl QueryValidationHash for q::Value {
+    fn query_validation_hash(&self, hasher: &mut QueryValidationHasher) {
+        match self {
+            q::Value::Variable(v) => {
+                "variable".hash(hasher);
+                v.hash(hasher);
+            }
+            // turns Int into 0
+            q::Value::Int(_) => {
+                "int".hash(hasher);
+                0.hash(hasher)
+            }
+            // turns Float into 0
+            q::Value::Float(_) => {
+                "float".hash(hasher);
+                0.hash(hasher)
+            }
+            // turns String into ""
+            q::Value::String(_) => "".hash(hasher),
+            // Do nothing for Boolean, because the value affect the body of the query
+            // when `@include` or `@skip` directives are used
+            q::Value::Boolean(b) => b.hash(hasher),
+            q::Value::Enum(e) => {
+                "enum".hash(hasher);
+                e.hash(hasher)
+            }
+            q::Value::List(list) => {
+                "list".hash(hasher);
+                for item in list {
+                    item.query_validation_hash(hasher);
+                }
+            }
+            q::Value::Object(obj) => {
+                "object".hash(hasher);
+                for (key, value) in obj {
+                    key.hash(hasher);
+                    value.query_validation_hash(hasher);
+                }
+            }
+            q::Value::Null => (),
+        }
+    }
+}
+
+fn compare_definitions<'a, T: q::Text<'a>>(
+    a: &q::Definition<'a, T>,
+    b: &q::Definition<'a, T>,
+) -> Ordering {
+    match (a, b) {
+        // Keep operations as they are
+        (q::Definition::Operation(_), q::Definition::Operation(_)) => Ordering::Equal,
+        // Sort fragments by name
+        (q::Definition::Fragment(a), q::Definition::Fragment(b)) => a.name.cmp(&b.name),
+        // Operation -> Fragment
+        _ => definition_kind_ordering(a).cmp(&definition_kind_ordering(b)),
+    }
+}
+
+fn compare_selections<'a>(a: &q::Selection, b: &q::Selection) -> Ordering {
+    match (a, b) {
+        // Sort fields by name
+        (q::Selection::Field(a), q::Selection::Field(b)) => a.name.cmp(&b.name),
+        // Sort fragments by name
+        (q::Selection::FragmentSpread(a), q::Selection::FragmentSpread(b)) => {
+            a.fragment_name.cmp(&b.fragment_name)
+        }
+        _ => {
+            let a_ordering = selection_kind_ordering(a);
+            let b_ordering = selection_kind_ordering(b);
+            a_ordering.cmp(&b_ordering)
+        }
+    }
+}
+
+fn compare_arguments<'a>(a: &(String, q::Value), b: &(String, q::Value)) -> Ordering {
+    a.0.cmp(&b.0)
+}
+
+fn compare_variable_definitions<'a>(
+    a: &q::VariableDefinition,
+    b: &q::VariableDefinition,
+) -> Ordering {
+    a.name.cmp(&b.name)
 }
 
 /// Assigns an order to different variants of Selection
-fn selection_kind_ordering<'a, T: Text<'a>>(selection: &Selection<'a, T>) -> u8 {
+fn selection_kind_ordering<'a>(selection: &q::Selection) -> u8 {
     match selection {
-        Selection::FragmentSpread(_) => 1,
-        Selection::InlineFragment(_) => 2,
-        Selection::Field(_) => 3,
+        q::Selection::FragmentSpread(_) => 1,
+        q::Selection::InlineFragment(_) => 2,
+        q::Selection::Field(_) => 3,
     }
 }
 
 /// Assigns an order to different variants of Definition
-fn definition_kind_ordering<'a, T: Text<'a>>(definition: &Definition<'a, T>) -> u8 {
+fn definition_kind_ordering<'a, T: q::Text<'a>>(definition: &q::Definition<'a, T>) -> u8 {
     match definition {
-        Definition::Operation(_) => 1,
-        Definition::Fragment(_) => 2,
+        q::Definition::Operation(_) => 1,
+        q::Definition::Fragment(_) => 2,
     }
 }
 
