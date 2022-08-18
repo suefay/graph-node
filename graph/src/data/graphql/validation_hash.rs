@@ -31,10 +31,9 @@ impl QueryValidationHash for q::Document {
         next_difinitions.sort_unstable_by(|a, b| compare_definitions(a, b));
 
         for defn in &next_difinitions {
-            use q::Definition::*;
             match defn {
-                Operation(operation) => operation.query_validation_hash(hasher),
-                Fragment(fragment) => fragment.query_validation_hash(hasher),
+                q::Definition::Operation(operation) => operation.query_validation_hash(hasher),
+                q::Definition::Fragment(fragment) => fragment.query_validation_hash(hasher),
             }
         }
     }
@@ -42,26 +41,25 @@ impl QueryValidationHash for q::Document {
 
 impl QueryValidationHash for q::OperationDefinition {
     fn query_validation_hash(&self, hasher: &mut QueryValidationHasher) {
-        use graphql_parser::query::OperationDefinition::*;
         // We want `[query|subscription|mutation] things { BODY }` to hash
         // to the same thing as just `things { BODY }`, except variables
         match self {
-            SelectionSet(set) => set.query_validation_hash(hasher),
-            Query(query) => {
+            q::OperationDefinition::SelectionSet(set) => set.query_validation_hash(hasher),
+            q::OperationDefinition::Query(query) => {
                 // Sort variables by name
                 let mut next_variables = query.variable_definitions.clone();
                 next_variables.sort_unstable_by(|a, b| compare_variable_definitions(a, b));
 
                 query.selection_set.query_validation_hash(hasher)
             }
-            Mutation(mutation) => {
+            q::OperationDefinition::Mutation(mutation) => {
                 // Sort variables by name
                 let mut next_variables = mutation.variable_definitions.clone();
                 next_variables.sort_unstable_by(|a, b| compare_variable_definitions(a, b));
 
                 mutation.selection_set.query_validation_hash(hasher)
             }
-            Subscription(subscription) => {
+            q::OperationDefinition::Subscription(subscription) => {
                 // Sort variables by name
                 let mut next_variables = subscription.variable_definitions.clone();
                 next_variables.sort_unstable_by(|a, b| compare_variable_definitions(a, b));
@@ -276,16 +274,25 @@ mod tests {
 
     #[test]
     fn do_not_sort_inline_fragments() {
-        const Q1: &str = "{ things { ... on ThingsA { a } ... on ThingsB { b } } }";
-        const Q2: &str = "{ things { ... on ThingsB { b } ... on ThingsA { a } } }";
+        const Q1: &str = "      { things { ... on ThingA { a }    ... on ThingB { b }    } }";
+        const Q2: &str = "      { things { ... on ThingB { b }    ... on ThingA { a }    } }";
+        const Q3: &str = "query { things { ... on ThingA { c: a } ... on ThingB { c: b } } }";
+        const Q4: &str = "query { things { ... on ThingB { c: b } ... on ThingA { c: a } } }";
         let q1 = parse_query(Q1)
             .expect("q1 is syntactically valid")
             .into_static();
         let q2 = parse_query(Q2)
             .expect("q2 is syntactically valid")
             .into_static();
+        let q3 = parse_query(Q3)
+            .expect("q3 is syntactically valid")
+            .into_static();
+        let q4 = parse_query(Q4)
+            .expect("q4 is syntactically valid")
+            .into_static();
 
         assert_ne!(validation_hash(&q1), validation_hash(&q2));
+        assert_ne!(validation_hash(&q3), validation_hash(&q4));
     }
 
     #[test]
