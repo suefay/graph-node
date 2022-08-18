@@ -150,7 +150,10 @@ fn validate_query(
     document: &s::Document,
 ) -> Result<(), Vec<QueryExecutionError>> {
     let errors = {
-        let cached = GRAPHQL_VALIDATION_CACHE.lock().get(&query.hash).cloned();
+        let cached = GRAPHQL_VALIDATION_CACHE
+            .lock()
+            .get(&query.validation_hash)
+            .cloned();
         match cached {
             Some(cached) => cached,
             None => {
@@ -158,7 +161,7 @@ fn validate_query(
                     validate(&document, &query.document, &GRAPHQL_VALIDATION_PLAN);
                 GRAPHQL_VALIDATION_CACHE
                     .lock()
-                    .insert(query.hash, validation_errors.clone());
+                    .insert(query.validation_hash, validation_errors.clone());
                 validation_errors
             }
         }

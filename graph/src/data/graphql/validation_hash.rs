@@ -12,7 +12,7 @@ use std::hash::{Hash, Hasher};
 // - transforming the selection sets like `query name { things }` into `{ things }`
 // - removing primitive values (like String, Int, Float except Boolean because it can change the body of the operation when used with `@include` or `@skip`)
 // - ignoring aliases
-pub fn query_hash(query: &q::Document) -> u64 {
+pub fn validation_hash(query: &q::Document) -> u64 {
     let mut hasher = DefaultHasher::new();
     query.query_validation_hash(&mut hasher);
     hasher.finish()
@@ -271,7 +271,7 @@ mod tests {
             .expect("q2 is syntactically valid")
             .into_static();
 
-        assert_eq!(query_hash(&q1), query_hash(&q2));
+        assert_eq!(validation_hash(&q1), validation_hash(&q2));
     }
 
     #[test]
@@ -285,7 +285,7 @@ mod tests {
             .expect("q2 is syntactically valid")
             .into_static();
 
-        assert_ne!(query_hash(&q1), query_hash(&q2));
+        assert_ne!(validation_hash(&q1), validation_hash(&q2));
     }
 
     #[test]
@@ -301,7 +301,7 @@ mod tests {
             .expect("q2 is syntactically valid")
             .into_static();
 
-        assert_eq!(query_hash(&q1), query_hash(&q2));
+        assert_eq!(validation_hash(&q1), validation_hash(&q2));
     }
 
     #[test]
@@ -317,7 +317,7 @@ mod tests {
             .expect("q2 is syntactically valid")
             .into_static();
 
-        assert_eq!(query_hash(&q1), query_hash(&q2));
+        assert_eq!(validation_hash(&q1), validation_hash(&q2));
     }
 
     #[test]
@@ -331,7 +331,7 @@ mod tests {
             .expect("q2 is syntactically valid")
             .into_static();
 
-        assert_eq!(query_hash(&q1), query_hash(&q2));
+        assert_eq!(validation_hash(&q1), validation_hash(&q2));
     }
 
     #[test]
@@ -345,7 +345,7 @@ mod tests {
             .expect("q2 is syntactically valid")
             .into_static();
 
-        assert_eq!(query_hash(&q1), query_hash(&q2));
+        assert_eq!(validation_hash(&q1), validation_hash(&q2));
     }
 
     #[test]
@@ -359,7 +359,7 @@ mod tests {
             .expect("q2 is syntactically valid")
             .into_static();
 
-        assert_ne!(query_hash(&q1), query_hash(&q2));
+        assert_ne!(validation_hash(&q1), validation_hash(&q2));
     }
 
     #[test]
@@ -373,6 +373,6 @@ mod tests {
             .expect("q2 is syntactically valid")
             .into_static();
 
-        assert_eq!(query_hash(&q1), query_hash(&q2));
+        assert_eq!(validation_hash(&q1), validation_hash(&q2));
     }
 }

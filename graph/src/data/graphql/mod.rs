@@ -21,8 +21,8 @@ pub use self::values::{
     ValueMap,
 };
 
-pub mod query_hash;
 pub mod shape_hash;
+pub mod validation_hash;
 
 pub mod effort;
 
