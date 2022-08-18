@@ -1,4 +1,5 @@
 use crate::prelude::q;
+use second_stack::buffer;
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -26,16 +27,16 @@ pub trait QueryValidationHash {
 
 impl QueryValidationHash for q::Document {
     fn query_validation_hash(&self, hasher: &mut QueryValidationHasher) {
-        // Sort definitions by kind
-        let mut next_difinitions = self.definitions.clone();
-        next_difinitions.sort_unstable_by(|a, b| compare_definitions(a, b));
-
-        for defn in &next_difinitions {
-            match defn {
-                q::Definition::Operation(operation) => operation.query_validation_hash(hasher),
-                q::Definition::Fragment(fragment) => fragment.query_validation_hash(hasher),
+        buffer(self.definitions.iter(), |definitions| {
+            // Sort definitions by kind
+            definitions.sort_unstable_by(|a, b| compare_definitions(a, b));
+            for definition in definitions {
+                match definition {
+                    q::Definition::Operation(operation) => operation.query_validation_hash(hasher),
+                    q::Definition::Fragment(fragment) => fragment.query_validation_hash(hasher),
+                }
             }
-        }
+        });
     }
 }
 
@@ -43,26 +44,42 @@ impl QueryValidationHash for q::OperationDefinition {
     fn query_validation_hash(&self, hasher: &mut QueryValidationHasher) {
         // We want `[query|subscription|mutation] things { BODY }` to hash
         // to the same thing as just `things { BODY }`, except variables
+        // We ignore directives and operation names.
         match self {
             q::OperationDefinition::SelectionSet(set) => set.query_validation_hash(hasher),
             q::OperationDefinition::Query(query) => {
                 // Sort variables by name
-                let mut next_variables = query.variable_definitions.clone();
-                next_variables.sort_unstable_by(|a, b| compare_variable_definitions(a, b));
+                buffer(query.variable_definitions.iter(), |variables| {
+                    variables.sort_unstable_by(|a, b| compare_variable_definitions(a, b));
+
+                    for variable in variables {
+                        variable.query_validation_hash(hasher);
+                    }
+                });
 
                 query.selection_set.query_validation_hash(hasher)
             }
             q::OperationDefinition::Mutation(mutation) => {
                 // Sort variables by name
-                let mut next_variables = mutation.variable_definitions.clone();
-                next_variables.sort_unstable_by(|a, b| compare_variable_definitions(a, b));
+                buffer(mutation.variable_definitions.iter(), |variables| {
+                    variables.sort_unstable_by(|a, b| compare_variable_definitions(a, b));
+
+                    for variable in variables {
+                        variable.query_validation_hash(hasher);
+                    }
+                });
 
                 mutation.selection_set.query_validation_hash(hasher)
             }
             q::OperationDefinition::Subscription(subscription) => {
                 // Sort variables by name
-                let mut next_variables = subscription.variable_definitions.clone();
-                next_variables.sort_unstable_by(|a, b| compare_variable_definitions(a, b));
+                buffer(subscription.variable_definitions.iter(), |variables| {
+                    variables.sort_unstable_by(|a, b| compare_variable_definitions(a, b));
+
+                    for variable in variables {
+                        variable.query_validation_hash(hasher);
+                    }
+                });
 
                 subscription.selection_set.query_validation_hash(hasher)
             }
@@ -100,22 +117,26 @@ impl QueryValidationHash for q::Type {
 impl QueryValidationHash for q::FragmentDefinition {
     fn query_validation_hash(&self, hasher: &mut QueryValidationHasher) {
         self.name.hash(hasher);
+        self.type_condition.query_validation_hash(hasher);
         self.selection_set.query_validation_hash(hasher);
     }
 }
 
 impl QueryValidationHash for q::SelectionSet {
     fn query_validation_hash(&self, hasher: &mut QueryValidationHasher) {
-        let mut next_items = self.items.clone();
-        next_items.sort_unstable_by(|a, b| compare_selections(a, b));
-        for selection in &next_items {
-            selection.query_validation_hash(hasher);
-        }
+        buffer(self.items.iter(), |selections| {
+            selections.sort_unstable_by(|a, b| compare_selections(a, b));
+
+            for selection in selections {
+                selection.query_validation_hash(hasher);
+            }
+        });
     }
 }
 
 impl QueryValidationHash for q::Selection {
     fn query_validation_hash(&self, hasher: &mut QueryValidationHasher) {
+        // Skips directives
         match self {
             q::Selection::Field(field) => field.query_validation_hash(hasher),
             q::Selection::FragmentSpread(fragment) => fragment.fragment_name.hash(hasher),
@@ -126,16 +147,18 @@ impl QueryValidationHash for q::Selection {
 
 impl QueryValidationHash for q::Field {
     fn query_validation_hash(&self, hasher: &mut QueryValidationHasher) {
+        // Skips an alias and directives
         self.name.hash(hasher);
 
-        let mut next_arguments = self.arguments.clone();
-        next_arguments.sort_unstable_by(|a, b| compare_arguments(a, b));
+        buffer(self.arguments.iter(), |arguments| {
+            arguments.sort_unstable_by(|a, b| compare_arguments(a, b));
 
-        for arg in &next_arguments {
-            let (name, value) = arg;
-            name.hash(hasher);
-            value.query_validation_hash(hasher);
-        }
+            for arg in arguments {
+                let (name, value) = arg;
+                name.hash(hasher);
+                value.query_validation_hash(hasher);
+            }
+        });
 
         self.selection_set.query_validation_hash(hasher);
     }
@@ -143,11 +166,18 @@ impl QueryValidationHash for q::Field {
 
 impl QueryValidationHash for q::InlineFragment {
     fn query_validation_hash(&self, hasher: &mut QueryValidationHasher) {
+        // Skips directives
         match self.type_condition.clone() {
-            Some(type_condition) => type_condition.to_string().hash(hasher),
-            None => "".hash(hasher),
+            Some(type_condition) => type_condition.query_validation_hash(hasher),
+            None => (),
         }
         self.selection_set.query_validation_hash(hasher);
+    }
+}
+
+impl QueryValidationHash for q::TypeCondition {
+    fn query_validation_hash(&self, hasher: &mut QueryValidationHasher) {
+        self.to_string().hash(hasher);
     }
 }
 
