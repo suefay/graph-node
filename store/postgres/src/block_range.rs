@@ -205,6 +205,27 @@ impl<'a> BlockRangeColumn<'a> {
         }
     }
 
+    /// Output SQL that matches only rows whose range was closed before
+    /// block `self.block`, i.e. versions that were historical/in the past
+    /// at `self.block`
+    pub fn historical(&self, out: &mut AstPass<Pg>) -> QueryResult<()> {
+        out.unsafe_to_cache_prepared();
+
+        match self {
+            BlockRangeColumn::Mutable { block, .. } => {
+                out.push_sql("coalesce(upper(");
+                out.push_identifier(BLOCK_RANGE_COLUMN)?;
+                out.push_sql("), 2147483647) <= ");
+                out.push_bind_param::<Integer, _>(block)
+            }
+            BlockRangeColumn::Immutable { .. } => {
+                // There's no point in asking for this for an immutable
+                // table
+                unreachable!("this query should not have been generated");
+            }
+        }
+    }
+
     pub fn column_name(&self) -> &str {
         match self {
             BlockRangeColumn::Mutable { .. } => BLOCK_RANGE_COLUMN,

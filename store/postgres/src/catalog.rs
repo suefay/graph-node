@@ -12,7 +12,10 @@ use std::iter::FromIterator;
 use std::sync::Arc;
 
 use graph::prelude::anyhow::anyhow;
-use graph::{data::subgraph::schema::POI_TABLE, prelude::StoreError};
+use graph::{
+    data::subgraph::schema::POI_TABLE,
+    prelude::{lazy_static, StoreError},
+};
 
 use crate::connection_pool::ForeignServer;
 use crate::{
@@ -154,9 +157,10 @@ fn get_text_columns(
     Ok(map)
 }
 
-pub fn supports_proof_of_indexing(
-    conn: &diesel::pg::PgConnection,
+pub fn table_exists(
+    conn: &PgConnection,
     namespace: &Namespace,
+    table: &SqlName,
 ) -> Result<bool, StoreError> {
     #[derive(Debug, QueryableByName)]
     struct Table {
@@ -167,10 +171,20 @@ pub fn supports_proof_of_indexing(
     let query =
         "SELECT table_name FROM information_schema.tables WHERE table_schema=$1 AND table_name=$2";
     let result: Vec<Table> = diesel::sql_query(query)
-        .bind::<Text, _>(namespace.as_str())
-        .bind::<Text, _>(POI_TABLE)
+        .bind::<Text, _>(namespace)
+        .bind::<Text, _>(table.as_str())
         .load(conn)?;
     Ok(result.len() > 0)
+}
+
+pub fn supports_proof_of_indexing(
+    conn: &diesel::pg::PgConnection,
+    namespace: &Namespace,
+) -> Result<bool, StoreError> {
+    lazy_static! {
+        static ref POI_TABLE_NAME: SqlName = SqlName::verbatim(POI_TABLE.to_owned());
+    }
+    table_exists(conn, namespace, &POI_TABLE_NAME)
 }
 
 pub fn current_servers(conn: &PgConnection) -> Result<Vec<String>, StoreError> {
