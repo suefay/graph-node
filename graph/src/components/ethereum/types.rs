@@ -86,6 +86,19 @@ impl EthereumBlockWithCalls {
 
         Ok(evaluate_transaction_status(receipt.status))
     }
+
+    // Check if the given call is eligible.
+    pub fn call_is_eligible(
+        &self,
+        call: &EthereumCall,
+        allow_failed_transactions: bool,
+    ) -> anyhow::Result<bool> {
+        if allow_failed_transactions {
+            return Ok(true);
+        }
+
+        self.transaction_for_call_succeeded(call)
+    }
 }
 
 /// Evaluates if a given transaction was successful.
@@ -119,10 +132,10 @@ pub struct EthereumCall {
 }
 
 impl EthereumCall {
-    pub fn try_from_trace(trace: &Trace) -> Option<Self> {
+    pub fn try_from_trace(trace: &Trace, error_tolerant: bool) -> Option<Self> {
         // The parity-ethereum tracing api returns traces for operations which had execution errors.
         // Filter errorful traces out, since call handlers should only run on successful CALLs.
-        if trace.error.is_some() {
+        if !error_tolerant && trace.error.is_some() {
             return None;
         }
         // We are only interested in traces from CALLs

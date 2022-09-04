@@ -480,6 +480,7 @@ impl TriggersAdapterTrait<Chain> for TriggersAdapter {
             to,
             filter,
             self.unified_api_version.clone(),
+            true,
         )
         .await
     }
@@ -496,6 +497,7 @@ impl TriggersAdapterTrait<Chain> for TriggersAdapter {
             self.ethrpc_metrics.clone(),
             filter.requires_traces(),
             block,
+            true,
         )
         .await?;
 
@@ -511,6 +513,7 @@ impl TriggersAdapterTrait<Chain> for TriggersAdapter {
                     block_number,
                     filter,
                     self.unified_api_version.clone(),
+                    true,
                 )
                 .await?;
                 assert!(blocks.len() == 1);
@@ -522,7 +525,7 @@ impl TriggersAdapterTrait<Chain> for TriggersAdapter {
                     &filter.log,
                     &full_block.ethereum_block,
                 ));
-                triggers.append(&mut parse_call_triggers(&filter.call, &full_block)?);
+                triggers.append(&mut parse_call_triggers(&filter.call, &full_block, true)?);
                 triggers.append(&mut parse_block_triggers(&filter.block, &full_block));
                 Ok(BlockWithTriggers::new(block, triggers))
             }

@@ -698,6 +698,7 @@ impl EthereumAdapter {
         from: BlockNumber,
         to: BlockNumber,
         call_filter: &'a EthereumCallFilter,
+        allow_failed_calls: bool,
     ) -> Box<dyn Stream<Item = EthereumCall, Error = Error> + Send + 'a> {
         let eth = self.clone();
 
@@ -724,7 +725,7 @@ impl EthereumAdapter {
 
         Box::new(
             eth.trace_stream(&logger, subgraph_metrics, from, to, addresses)
-                .filter_map(|trace| EthereumCall::try_from_trace(&trace))
+                .filter_map(move |trace| EthereumCall::try_from_trace(&trace, allow_failed_calls))
                 .filter(move |call| {
                     // `trace_filter` can only filter by calls `to` an address and
                     // a block range. Since subgraphs are subscribing to calls
@@ -741,6 +742,7 @@ impl EthereumAdapter {
         subgraph_metrics: Arc<SubgraphEthRpcMetrics>,
         block_number: BlockNumber,
         block_hash: H256,
+        allow_failed_calls: bool,
     ) -> Result<Vec<EthereumCall>, Error> {
         let eth = self.clone();
         let addresses = Vec::new();
@@ -782,7 +784,7 @@ impl EthereumAdapter {
 
         Ok(traces
             .iter()
-            .filter_map(EthereumCall::try_from_trace)
+            .filter_map(|trace| EthereumCall::try_from_trace(&trace, allow_failed_calls))
             .collect())
     }
 
@@ -1329,6 +1331,7 @@ pub(crate) async fn blocks_with_triggers(
     to: BlockNumber,
     filter: &TriggerFilter,
     unified_api_version: UnifiedMappingApiVersion,
+    allow_failed_calls: bool,
 ) -> Result<Vec<BlockWithTriggers<crate::Chain>>, Error> {
     // Each trigger filter needs to be queried for the same block range
     // and the blocks yielded need to be deduped. If any error occurs
@@ -1357,7 +1360,14 @@ pub(crate) async fn blocks_with_triggers(
     // Scan for Calls
     if !filter.call.is_empty() {
         let calls_future = eth
-            .calls_in_block_range(&logger, subgraph_metrics.clone(), from, to, &filter.call)
+            .calls_in_block_range(
+                &logger,
+                subgraph_metrics.clone(),
+                from,
+                to,
+                &filter.call,
+                allow_failed_calls,
+            )
             .map(Arc::new)
             .map(EthereumTrigger::Call)
             .collect()
@@ -1383,7 +1393,14 @@ pub(crate) async fn blocks_with_triggers(
         // in the block filter, transform the `block_filter` into
         // a `call_filter` and run `blocks_with_calls`
         let block_future = eth
-            .calls_in_block_range(&logger, subgraph_metrics.clone(), from, to, &call_filter)
+            .calls_in_block_range(
+                &logger,
+                subgraph_metrics.clone(),
+                from,
+                to,
+                &call_filter,
+                allow_failed_calls,
+            )
             .map(|call| {
                 EthereumTrigger::Block(
                     BlockPtr::from(&call),
@@ -1452,7 +1469,9 @@ pub(crate) async fn blocks_with_triggers(
         .await?;
 
     // Filter out call triggers that come from unsuccessful transactions
-    let mut blocks = if unified_api_version.equal_or_greater_than(&API_VERSION_0_0_5) {
+    let mut blocks = if !allow_failed_calls
+        && unified_api_version.equal_or_greater_than(&API_VERSION_0_0_5)
+    {
         let futures = blocks.into_iter().map(|block| {
             filter_call_triggers_from_unsuccessful_transactions(block, &eth, &chain_store, &logger)
         });
@@ -1491,6 +1510,7 @@ pub(crate) async fn get_calls(
     subgraph_metrics: Arc<SubgraphEthRpcMetrics>,
     requires_traces: bool,
     block: BlockFinality,
+    allow_failed_calls: bool,
 ) -> Result<BlockFinality, Error> {
     // For final blocks, or nonfinal blocks where we already checked
     // (`calls.is_some()`), do nothing; if we haven't checked for calls, do
@@ -1515,6 +1535,7 @@ pub(crate) async fn get_calls(
                         BlockNumber::try_from(ethereum_block.block.number.unwrap().as_u64())
                             .unwrap(),
                         ethereum_block.block.hash.unwrap(),
+                        allow_failed_calls,
                     )
                     .await?
             };
@@ -1552,6 +1573,7 @@ pub(crate) fn parse_log_triggers(
 pub(crate) fn parse_call_triggers(
     call_filter: &EthereumCallFilter,
     block: &EthereumBlockWithCalls,
+    allow_failed_transactions: bool,
 ) -> anyhow::Result<Vec<EthereumTrigger>> {
     if call_filter.is_empty() {
         return Ok(vec![]);
@@ -1562,7 +1584,7 @@ pub(crate) fn parse_call_triggers(
             .iter()
             .filter(move |call| call_filter.matches(call))
             .map(
-                move |call| match block.transaction_for_call_succeeded(call) {
+                move |call| match block.call_is_eligible(call, allow_failed_transactions) {
                     Ok(true) => Ok(Some(EthereumTrigger::Call(Arc::new(call.clone())))),
                     Ok(false) => Ok(None),
                     Err(e) => Err(e),
